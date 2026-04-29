@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (The Last Stand)
+name: Build Unsigned IPA (Official Spec Aligned)
 
 on:
   workflow_dispatch:
@@ -13,16 +13,14 @@ jobs:
           submodules: 'recursive'
           fetch-depth: 0
 
-      - name: Setup Go (Critical Fix)
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          # 必须降级到 1.22.x。1.24 极其不稳定，1.23 对新特性的校验会导致符号导出失败。
-          go-version: '1.22.x'
+          go-version: '1.23.x' # 严格遵循官方文档要求的 Go 1.23
           cache: true
 
       - name: Install SagerNet Gomobile
         run: |
-          # 重新安装最匹配 1.22 的工具链版本
           go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.4
           go install github.com/sagernet/gomobile/cmd/gobind@v0.1.4
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
@@ -30,39 +28,34 @@ jobs:
 
       - name: Build Libbox Framework
         run: |
-          # 1. 克隆内核 v1.13.11
           git clone --branch v1.13.11 https://github.com/SagerNet/sing-box.git core
           cd core
           
-          # 2. 预热依赖并对齐 Module
-          go mod download
-          go mod tidy
+          # 1. 严格遵循官方要求的 Build Tags
+          # 加入了文档中强调的 badlinkname (KTLS支持) 和 with_gvisor
+          export GO_TAGS="with_quic with_dhcp with_wireguard with_shadowsocks with_ech with_utls with_clash_api with_gvisor badlinkname ios"
           
-          # 3. 终极手动 Bind
-          # 我们不再用官方脚本，也不用 github.com/... 完整路径
-          # 直接在 experimental/libbox 目录下进行本地 bind，这是成功率最高的方式
+          # 2. 注入官方要求的 Linker Flags (解决 Go 1.23+ 的校验问题)
+          export GO_LDFLAGS="-checklinkname=0 -s -w"
+          
+          # 3. 执行 Bind
+          # 我们在 experimental/libbox 目录下执行，这是现代内核的唯一合法导出点
           export GO111MODULE=on
-          # 核心 Tags 必须一个不少，ios 必须显式写出
           gomobile bind -v \
             -target ios \
             -iosversion 15.0 \
-            -tags "with_quic with_dhcp with_wireguard with_shadowsocks with_ech with_utls with_clash_api with_gvisor ios" \
+            -tags "$GO_TAGS" \
+            -ldflags "$GO_LDFLAGS" \
             -o ../Libbox.xcframework \
             ./experimental/libbox
           
           cd ..
-          # 强制确认文件存在
-          if [ ! -d "Libbox.xcframework" ]; then
-            echo "FAILED: Framework still not generated."
-            exit 1
-          fi
+          ls -d Libbox.xcframework
 
-      - name: Xcode Build (Skip Signing)
+      - name: Xcode Build (No Sign)
         run: |
-          # 寻找并编译
           PROJ=$(find . -name "*.xcodeproj" -maxdepth 1 | head -n 1)
           
-          # 针对无签名构建的强制参数
           xcodebuild -project "$PROJ" \
                      -scheme SFI \
                      -configuration Release \
