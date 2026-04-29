@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (Manual Precision Fix)
+name: Build Unsigned IPA (Precision Environment Fix)
 
 on:
   workflow_dispatch:
@@ -16,48 +16,47 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.22.x' # 降级到最稳定的版本，避开 1.24 的兼容性坑
           cache: true
 
       - name: Install SagerNet Gomobile Tools
         run: |
-          # 精准安装 SagerNet 修补版工具链
+          # 重新安装工具链
           go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.4
           go install github.com/sagernet/gomobile/cmd/gobind@v0.1.4
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
           $(go env GOPATH)/bin/gomobile init
 
-      - name: Build Libbox Framework (Manual Precision)
+      - name: Build Libbox Framework
         run: |
           # 1. 克隆内核
           git clone --branch v1.13.11 https://github.com/SagerNet/sing-box.git core
           cd core
           
-          # 2. 必须在内核目录下执行，以确保 go.mod 生效
+          # 2. 预处理环境
           go mod download
+          go mod tidy
           
-          # 3. 手动执行 gomobile bind
-          # 关键点 1：入口必须是 ./experimental/libbox
-          # 关键点 2：必须带上 ios 相关的 tags，否则 experimental 里的代码会被排除（导致 no exported names）
-          # 关键点 3：必须显式指定目标为 ios
+          # 3. 终极 bind 指令
+          # 重点：不再使用 ./experimental/libbox 这种本地路径，而是使用完整路径
+          # 重点：增加 ios 标签，并确保 tags 之间是空格分隔
           export GO111MODULE=on
           gomobile bind -v \
             -target ios \
             -iosversion 15.0 \
-            -tags "with_quic with_dhcp with_wireguard with_shadowsocks with_ech with_utls with_clash_api with_gvisor" \
+            -tags "with_quic with_dhcp with_wireguard with_shadowsocks with_ech with_utls with_clash_api with_gvisor ios" \
             -o ../Libbox.xcframework \
-            ./experimental/libbox
+            github.com/SagerNet/sing-box/experimental/libbox
           
           cd ..
-          # 验证
           ls -d Libbox.xcframework
 
       - name: Xcode Build (No Sign)
         run: |
-          # 确保 Libbox 就在当前目录下
-          [ -d "Libbox.xcframework" ] || { echo "Libbox missing!"; exit 1; }
-          
+          # 寻找工程
           PROJ=$(find . -name "*.xcodeproj" -maxdepth 1 | head -n 1)
+          
+          # 执行编译。注意：增加 -parallelizeTargets 提高成功率
           xcodebuild -project "$PROJ" \
                      -scheme SFI \
                      -configuration Release \
@@ -75,6 +74,10 @@ jobs:
         run: |
           mkdir -p Payload
           APP_PATH=$(find build/sing-box.xcarchive/Products/Applications -name "*.app" -maxdepth 1 | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Build failed, app not found."
+            exit 1
+          fi
           cp -r "$APP_PATH" Payload/
           zip -r sing-box-unsigned.ipa Payload
 
