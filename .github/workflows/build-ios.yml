@@ -10,8 +10,14 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          submodules: 'recursive'
+          submodules: 'recursive' # 确保子模块拉取
           fetch-depth: 0
+
+      - name: List Directory Structure (Debug)
+        run: |
+          echo "--- Root Directory Content ---"
+          ls -R
+          echo "--- End of Structure ---"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -26,24 +32,33 @@ jobs:
 
       - name: Build SFA Framework
         run: |
-          # 自动探测 go.mod 所在目录并进入执行
-          TARGET_DIR=$(find . -name "go.mod" -exec dirname {} \; | head -n 1)
-          echo "Found go.mod in $TARGET_DIR"
-          cd "$TARGET_DIR"
+          # 针对 SagerNet 仓库的特殊路径处理
+          # 尝试进入可能包含 go.mod 的目录
+          if [ -d "sing-box" ]; then
+            cd sing-box
+          fi
           
-          # 确保在有 gen_framework 的地方运行
-          # 如果当前目录没有 cmd/gen_framework，就去上一级找，或者全局找
-          GEN_SCRIPT=$(find . -name "gen_framework" -path "*/cmd/*" | head -n 1)
-          GEN_DIR=$(dirname $(dirname "$GEN_SCRIPT"))
+          # 检查当前目录
+          ls -F
           
-          echo "Running build script in $GEN_DIR"
-          cd "$GEN_DIR"
+          # 如果还是没有 go.mod，尝试手动初始化（兜底方案）
+          if [ ! -f "go.mod" ]; then
+             go mod init github.com/SagerNet/sing-box-for-apple || true
+          fi
+          
           go mod tidy
-          go run ./cmd/gen_framework --platform ios
+          
+          # 执行编译脚本 - 此时根据 Debug 结果调整路径
+          # 我们尝试在全项目搜索 gen_framework 并执行
+          SCRIPT_PATH=$(find . -name "gen_framework" | head -n 1)
+          if [ -z "$SCRIPT_PATH" ]; then
+            echo "Error: gen_framework not found!"
+            exit 1
+          fi
+          go run "$SCRIPT_PATH" --platform ios
 
       - name: Xcode Build (No Sign)
         run: |
-          # 找到工程文件所在目录执行
           WORKSPACE=$(find . -name "*.xcworkspace" | head -n 1)
           xcodebuild -workspace "$WORKSPACE" \
                      -scheme SFA \
@@ -59,7 +74,6 @@ jobs:
       - name: Package Unsigned IPA
         run: |
           mkdir -p Payload
-          # 动态寻找构建出的 .app 并打包
           APP_PATH=$(find build/SFA.xcarchive/Products/Applications -name "*.app" | head -n 1)
           cp -r "$APP_PATH" Payload/
           zip -r sing-box-unsigned.ipa Payload
