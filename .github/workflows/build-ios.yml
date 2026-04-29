@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (Scheme Auto-Detect)
+name: Build Unsigned IPA (Final Stable)
 
 on:
   workflow_dispatch:
@@ -38,43 +38,39 @@ jobs:
 
       - name: Xcode Build (No Sign)
         run: |
-          # 1. 寻找工程文件
-          PROJ=$(find . -name "*.xcodeproj" -maxdepth 1 | head -n 1)
-          echo "Using Project: $PROJ"
+          # 1. 确定 Scheme 和工程
+          PROJ="sing-box.xcodeproj"
+          SCHEME="SFI" # 确认是 SFI
           
-          # 2. 自动获取 Scheme 名字 (防止 SFI 不对)
-          # 获取第一个包含 'sing-box' 或 'SFI' 关键字的 Scheme
-          SCHEME=$(xcodebuild -list -project "$PROJ" | grep -E "SFI|sing-box" | head -n 1 | sed 's/^[[:space:]]*//')
-          echo "Detected Scheme: $SCHEME"
-          
-          # 3. 强制解析 Swift PM 依赖
+          # 2. 解析依赖
           xcodebuild -resolvePackageDependencies -project "$PROJ" -scheme "$SCHEME"
 
-          # 4. 执行 Build (不使用 archive，直接 build 产物更容易找)
-          xcodebuild build -project "$PROJ" \
+          # 3. 执行 Archive (这步最稳)
+          xcodebuild archive -project "$PROJ" \
                      -scheme "$SCHEME" \
                      -configuration Release \
-                     -sdk iphoneos \
-                     -derivedDataPath build \
+                     -destination 'generic/platform=iOS' \
+                     -archivePath build/sing-box.xcarchive \
                      CODE_SIGNING_ALLOWED=NO \
                      CODE_SIGNING_REQUIRED=NO \
                      CODE_SIGN_IDENTITY="" \
                      PROVISIONING_PROFILE="" \
-                     AD_HOC_CODE_SIGNING_ALLOWED=YES
+                     AD_HOC_CODE_SIGNING_ALLOWED=YES \
+                     COMPILER_INDEX_STORE_ENABLE=NO
 
       - name: Package Unsigned IPA
         run: |
-          echo "Searching for .app in build directory..."
-          # 在我们指定的 build 目录下深挖 .app
-          APP_PATH=$(find build -name "*.app" -type d | grep "Release-iphoneos" | head -n 1)
+          # 4. 精准定位 .app 并打包
+          echo "Locating .app in archive..."
+          APP_PATH=$(find build/sing-box.xcarchive -name "*.app" -type d | head -n 1)
           
           if [ -z "$APP_PATH" ]; then
-            echo "CRITICAL ERROR: .app not found!"
+            echo "ERROR: App not found in archive."
             ls -R build
             exit 1
           fi
           
-          echo "Found app at: $APP_PATH"
+          echo "Packaging: $APP_PATH"
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
           zip -r sing-box-unsigned.ipa Payload
