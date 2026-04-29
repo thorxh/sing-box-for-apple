@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (Fix CP Conflict)
+name: Build Unsigned IPA (Structure Synchronization)
 
 on:
   workflow_dispatch:
@@ -25,43 +25,45 @@ jobs:
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
           $(go env GOPATH)/bin/gomobile init
 
-      - name: Build Libbox Framework
+      - name: Build Libbox Framework (Proven)
         run: |
           git clone --branch v1.13.11 https://github.com/SagerNet/sing-box.git core
           cd core
+          # 使用之前验证成功的 tags 和 flags
           export GO_TAGS="with_quic with_dhcp with_wireguard with_shadowsocks with_utls with_clash_api with_gvisor badlinkname ios"
           export GO_LDFLAGS="-checklinkname=0 -s -w"
           export GO111MODULE=on
-          # 先编译到临时目录，避免 cp 冲突
+          # 输出到 core 同级目录
           gomobile bind -target ios -iosversion 15.0 -tags "$GO_TAGS" -ldflags "$GO_LDFLAGS" -o ../Libbox.xcframework ./experimental/libbox
           cd ..
           
-          # 【精准分发】
-          # 1. 放在 Library 下 (核心依赖位)
-          mkdir -p Library/Frameworks
-          cp -rf Libbox.xcframework Library/Frameworks/
-          
-          # 2. 放在根目录下的 Frameworks (主程序引用位)
+          # 【Vim 级精准物理同步】
+          # 先创建目标文件夹，再用不同的名字规避 cp 冲突报错
           mkdir -p Frameworks
-          cp -rf Libbox.xcframework Frameworks/
+          mkdir -p Library/Frameworks
           
-          echo "Libbox deployed to Library/Frameworks and Frameworks/ successfully."
+          # 使用 rsync 或 cp -R (避开原位拷贝)
+          cp -R Libbox.xcframework ./Frameworks/
+          cp -R Libbox.xcframework ./Library/Frameworks/
+          
+          echo "Libbox structure synchronization complete."
 
-      - name: Xcode Build (Super Force)
+      - name: Xcode Build (No Sign Force)
         run: |
           PROJ="sing-box.xcodeproj"
           SCHEME="SFI"
           
-          # 确保依赖解析
+          # 1. 解析依赖
           xcodebuild -resolvePackageDependencies -project "$PROJ" -scheme "$SCHEME"
 
-          # 这里的关键是让子项目也能搜到根目录下的 Frameworks
+          # 2. 强行 build
+          # 我们把当前目录、Frameworks 目录、Library/Frameworks 目录全部喂进去
           xcodebuild build -project "$PROJ" \
                      -scheme "$SCHEME" \
                      -configuration Release \
                      -sdk iphoneos \
                      -derivedDataPath build_output \
-                     FRAMEWORK_SEARCH_PATHS="$(pwd)/Frameworks $(pwd)/Library/Frameworks" \
+                     FRAMEWORK_SEARCH_PATHS="$(pwd) $(pwd)/Frameworks $(pwd)/Library/Frameworks" \
                      CODE_SIGNING_ALLOWED=NO \
                      CODE_SIGNING_REQUIRED=NO \
                      CODE_SIGN_IDENTITY="" \
@@ -72,14 +74,16 @@ jobs:
       - name: Package Unsigned IPA
         run: |
           echo "Locating SFI.app..."
+          # 深度搜索 Release-iphoneos 下的 SFI.app
           APP_PATH=$(find build_output -name "SFI.app" -type d | grep "Release-iphoneos" | head -n 1)
           
           if [ -z "$APP_PATH" ]; then
+            # 兜底查找任何 .app
             APP_PATH=$(find build_output -name "*.app" -type d | grep "Release-iphoneos" | head -n 1)
           fi
 
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: .app not found."
+            echo "ERROR: .app file not found. Listing all candidates:"
             find build_output -name "*.app"
             exit 1
           fi
