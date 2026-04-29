@@ -1,7 +1,7 @@
 name: Build Unsigned IPA for EasySign
 
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:
 
 jobs:
   build:
@@ -10,7 +10,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          submodules: 'recursive' # 深度递归子模块
+          submodules: 'recursive'
           fetch-depth: 0
 
       - name: Setup Go
@@ -24,22 +24,15 @@ jobs:
           go install golang.org/x/mobile/cmd/gomobile@latest
           gomobile init
 
-      - name: Fix Go Workspace
-        run: |
-          # 强制同步依赖，防止脚本找不到 main module
-          go mod tidy
-          # 确保所有的子模块和依赖都在位
-          git submodule update --init --recursive
-
       - name: Build SFA Framework
+        # 关键点：进入 SFA 目录执行，那里才有 go.mod 和构建脚本
+        working-directory: SFA
         run: |
-          # 使用项目内置脚本生成 .xcframework
-          # 如果根目录没有 go.mod，脚本通常在 ./cmd 下运行，这里我们直接运行根目录脚本
+          go mod tidy
           go run ./cmd/gen_framework --platform ios
 
       - name: Xcode Build (No Sign)
         run: |
-          # 核心：关闭签名校验进行归档
           xcodebuild -workspace SFA.xcworkspace \
                      -scheme SFA \
                      -configuration Release \
@@ -53,9 +46,7 @@ jobs:
 
       - name: Package Unsigned IPA
         run: |
-          # 创建 Payload 结构并打包
           mkdir -p Payload
-          # 自动寻找生成的 .app 文件夹
           find build/SFA.xcarchive/Products/Applications -name "*.app" -exec cp -r {} Payload/ \;
           zip -r sing-box-unsigned.ipa Payload
 
@@ -64,4 +55,3 @@ jobs:
         with:
           name: sing-box-unsigned-ipa
           path: sing-box-unsigned.ipa
-          retention-days: 7 # 节省 GitHub 空间
