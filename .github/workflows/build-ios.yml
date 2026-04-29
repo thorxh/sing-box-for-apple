@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (Final Fix)
+name: Build Unsigned IPA (Fix Libbox Missing)
 
 on:
   workflow_dispatch:
@@ -17,12 +17,31 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          cache: true
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          gomobile init
+
+      - name: Compile Libbox Framework
+        run: |
+          # 1. 寻找包含 go.mod 的核心目录（通常是 sing-box 核心）
+          # 新版项目通常在根目录下执行特定的 go run 脚本来生成这个 xcframework
+          # 我们尝试直接运行生成脚本，并指定输出名称为 Libbox
+          
+          SCRIPT=$(find . -name "gen_framework" | head -n 1)
+          echo "Found generator script at: $SCRIPT"
+          
+          # 执行编译，并将产物命名为 Libbox.xcframework
+          # 注意：--out 参数是关键，必须对应报错信息里的路径
+          go run "$SCRIPT" --platform ios --out ./Libbox.xcframework
 
       - name: Xcode Build (No Sign)
         run: |
-          # 1. 直接指定项目和 Scheme
-          # 根目录下你的项目叫 sing-box.xcodeproj，iOS 对应的 Scheme 是 SFI
-          
+          # 确保 Libbox.xcframework 就在当前目录下
+          ls -d Libbox.xcframework || (echo "Libbox not found!" && exit 1)
+
           xcodebuild -project sing-box.xcodeproj \
                      -scheme SFI \
                      -configuration Release \
@@ -38,17 +57,11 @@ jobs:
       - name: Package Unsigned IPA
         run: |
           mkdir -p Payload
-          # 在归档中寻找主程序 .app
-          # 注意：新版可能在 SFI.app 或 sing-box.app，我们用 find 动态抓取
           APP_PATH=$(find build/sing-box.xcarchive/Products/Applications -name "*.app" -maxdepth 1 | head -n 1)
-          
           if [ -z "$APP_PATH" ]; then
-            echo "Error: .app file not found! Archive content:"
-            ls -R build/sing-box.xcarchive
+            echo "Error: .app file not found!"
             exit 1
           fi
-          
-          echo "Packing $APP_PATH into IPA..."
           cp -r "$APP_PATH" Payload/
           zip -r sing-box-unsigned.ipa Payload
 
