@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (Stable 1.13.11)
+name: Build Unsigned IPA (Go 1.25 Fix)
 
 on:
   workflow_dispatch:
@@ -16,32 +16,30 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          # 升级到 1.25 以匹配最新的 x/mobile 依赖
+          go-version: '1.25'
           cache: true
 
       - name: Install Gomobile Tools
         run: |
-          # 1. 全局安装编译工具
+          # 现代 Go 规范：直接使用 install 安装二进制工具
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
           
-          # 2. 初始化环境
+          # 初始化 gomobile
           $(go env GOPATH)/bin/gomobile init
 
       - name: Build Libbox Framework
         run: |
-          # 1. 克隆指定的 v1.13.11 版本
+          # 1. 克隆 v1.13.11 内核
           git clone --branch v1.13.11 https://github.com/SagerNet/sing-box.git core
           cd core
           
-          # 2. 预下载所有 Go 依赖
+          # 2. 在 module 内部下载依赖，这会自动处理 bind 包
           go mod download
           
-          # 3. 核心修复：手动安装 bind 包到工作区，防止 gomobile 找不到
-          go get golang.org/x/mobile/bind
-          
-          # 4. 执行编译
-          # 使用全限定包名 github.com/SagerNet/sing-box/lib/mobile
+          # 3. 编译 Libbox.xcframework
+          # 使用全限定包名，这是目前最稳的方式
           $(go env GOPATH)/bin/gomobile bind -v \
             -target ios \
             -iosversion 15.0 \
@@ -49,12 +47,10 @@ jobs:
             github.com/SagerNet/sing-box/lib/mobile
           
           cd ..
-          # 确认产物
           ls -d Libbox.xcframework
 
       - name: Xcode Build (No Sign)
         run: |
-          # 找到工程文件并编译
           PROJ=$(find . -name "*.xcodeproj" -maxdepth 1 | head -n 1)
           
           xcodebuild -project "$PROJ" \
@@ -73,15 +69,7 @@ jobs:
       - name: Package Unsigned IPA
         run: |
           mkdir -p Payload
-          # 寻找生成的 .app 并打包
           APP_PATH=$(find build/sing-box.xcarchive/Products/Applications -name "*.app" -maxdepth 1 | head -n 1)
-          
-          if [ -z "$APP_PATH" ]; then
-            echo "Error: .app file not found! Current build dir:"
-            ls -R build
-            exit 1
-          fi
-          
           cp -r "$APP_PATH" Payload/
           zip -r sing-box-unsigned.ipa Payload
 
