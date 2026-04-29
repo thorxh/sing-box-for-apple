@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (New Core Structure Fix)
+name: Build Unsigned IPA (Structure Optimized)
 
 on:
   workflow_dispatch:
@@ -21,41 +21,46 @@ jobs:
 
       - name: Install SagerNet Gomobile
         run: |
-          # 必须使用 SagerNet 的 fork，否则 experimental/libbox 的某些 ObjC 类型转换会报错
+          # 必须使用 SagerNet 的 fork 版本
           go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.4
           go install github.com/sagernet/gomobile/cmd/gobind@v0.1.4
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
           $(go env GOPATH)/bin/gomobile init
 
-      - name: Build Libbox Framework (Targeting Experimental)
+      - name: Build Libbox Framework
         run: |
-          # 1. 克隆内核 (v1.11.3 匹配你的目录树)
-          git clone --branch v1.11.3 https://github.com/SagerNet/sing-box.git core
-          cd core
+          # 1. 克隆内核到 core 目录
+          git clone --branch v1.13.11 https://github.com/SagerNet/sing-box.git core
           
-          # 2. 整理依赖
-          go mod download
+          # 2. 检查壳项目根目录的 Makefile 目标
+          # 尝试使用壳项目原生的构建指令，这会自动处理 experimental/libbox 入口
+          if grep -q "lib_ios" Makefile; then
+            echo "Using Makefile to build..."
+            # 这里的 GOPATH 设置是为了让 Makefile 里的 gomobile 命令能被找到
+            make lib_ios
+          else
+            echo "Makefile target not found, falling back to manual bind..."
+            cd core
+            go mod download
+            # 手动指向 experimental/libbox，这是 v1.13.11 的正确入口
+            gomobile bind -v \
+              -target ios \
+              -iosversion 15.0 \
+              -tags "with_quic with_dhcp with_wireguard with_shadowsocks with_ech with_utls with_clash_api" \
+              -o ../Libbox.xcframework \
+              github.com/SagerNet/sing-box/experimental/libbox
+            cd ..
+          fi
           
-          # 3. 核心修正：编译入口改为 experimental/libbox
-          # 这是新版内核唯一正确的导出入口
-          # 增加 -tags 确保所有功能（如 QUIC/Shadowsocks）的接口都被导出
-          export GO111MODULE=on
-          gomobile bind -v \
-            -target ios \
-            -iosversion 15.0 \
-            -tags "with_quic with_dhcp with_wireguard with_shadowsocks with_ech" \
-            -o ../Libbox.xcframework \
-            github.com/SagerNet/sing-box/experimental/libbox
-          
-          cd ..
+          # 3. 验证产物（Xcode 项目配置要求必须是大写的 Libbox.xcframework）
           ls -d Libbox.xcframework
 
       - name: Xcode Build (No Sign)
         run: |
-          # 确保 Libbox 已经到位
-          [ -d "Libbox.xcframework" ] || { echo "Libbox missing!"; exit 1; }
+          # 自动识别 .xcodeproj 文件
+          PROJ=$(find . -name "*.xcodeproj" -maxdepth 1 | head -n 1)
           
-          xcodebuild -project sing-box.xcodeproj \
+          xcodebuild -project "$PROJ" \
                      -scheme SFI \
                      -configuration Release \
                      -archivePath build/sing-box.xcarchive \
@@ -71,12 +76,21 @@ jobs:
       - name: Package Unsigned IPA
         run: |
           mkdir -p Payload
+          # 动态定位生成的 .app
           APP_PATH=$(find build/sing-box.xcarchive/Products/Applications -name "*.app" -maxdepth 1 | head -n 1)
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: .app file not found!"
+            ls -R build
+            exit 1
+          fi
+          
           cp -r "$APP_PATH" Payload/
           zip -r sing-box-unsigned.ipa Payload
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sing-box-unsigned
+          name: sing-box-v1.13.11-unsigned
           path: sing-box-unsigned.ipa
+          retention-days: 3
