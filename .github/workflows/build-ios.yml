@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (Fix Gobind Path)
+name: Build Unsigned IPA (Java 17 & Official Tool)
 
 on:
   workflow_dispatch:
@@ -13,6 +13,12 @@ jobs:
           submodules: 'recursive'
           fetch-depth: 0
 
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin' # 使用广泛兼容的 Temurin (OpenJDK)
+          java-version: '17'
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -21,12 +27,13 @@ jobs:
 
       - name: Install SagerNet Gomobile Tools
         run: |
-          # 修正后的安装路径：从 gomobile 仓库的 cmd 目录下安装
+          # 修正安装路径：通过完整包名安装二进制
           go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.4
           go install github.com/sagernet/gomobile/cmd/gobind@v0.1.4
           
           GOPATH=$(go env GOPATH)
           echo "$GOPATH/bin" >> $GITHUB_PATH
+          # 初始化 gomobile
           $GOPATH/bin/gomobile init
 
       - name: Build Libbox Framework
@@ -35,33 +42,30 @@ jobs:
           git clone --branch v1.13.11 https://github.com/SagerNet/sing-box.git core
           cd core
           
-          # 2. 下载依赖
+          # 2. 补齐 Go 依赖
           go mod download
           
-          # 3. 运行官方构建脚本
-          # 根据之前的报错，该脚本仅接受 -platform 等参数
+          # 3. 执行官方构建脚本 (此时 Java 17 已就绪)
           export GO111MODULE=on
           go run ./cmd/internal/build_libbox -platform ios
           
           # 4. 移动产物
-          # 脚本通常会在 core 目录下生成 Libbox.xcframework
           cd ..
-          # 使用 find 寻找生成的框架，确保路径正确
+          # 脚本通常在 core 根目录或 core/bin 下生成 Libbox.xcframework
           FRAMEWORK_PATH=$(find core -name "Libbox.xcframework" -type d | head -n 1)
-          if [ -n "$FRAMEWORK_PATH" ]; then
-            mv "$FRAMEWORK_PATH" ./Libbox.xcframework
-          else
-            echo "Error: Libbox.xcframework was not generated!"
+          if [ -z "$FRAMEWORK_PATH" ]; then
+            echo "Error: Libbox.xcframework not found in core directory!"
+            ls -R core
             exit 1
           fi
+          mv "$FRAMEWORK_PATH" ./Libbox.xcframework
+          
+          ls -d Libbox.xcframework
 
       - name: Xcode Build (No Sign)
         run: |
-          # 确保 Libbox 在位
-          ls -d Libbox.xcframework
-          
-          # 寻找工程并构建
           PROJ=$(find . -name "*.xcodeproj" -maxdepth 1 | head -n 1)
+          
           xcodebuild -project "$PROJ" \
                      -scheme SFI \
                      -configuration Release \
