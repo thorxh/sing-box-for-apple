@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (Symbol Export Fix)
+name: Build Unsigned IPA (New Core Structure Fix)
 
 on:
   workflow_dispatch:
@@ -21,31 +21,31 @@ jobs:
 
       - name: Install SagerNet Gomobile
         run: |
-          # 必须使用 sagernet fork 解决 ObjC 符号缺失
+          # 必须使用 SagerNet 的 fork，否则 experimental/libbox 的某些 ObjC 类型转换会报错
           go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.4
           go install github.com/sagernet/gomobile/cmd/gobind@v0.1.4
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
           $(go env GOPATH)/bin/gomobile init
 
-      - name: Build Libbox Framework
+      - name: Build Libbox Framework (Targeting Experimental)
         run: |
-          # 1. 克隆内核
+          # 1. 克隆内核 (v1.11.3 匹配你的目录树)
           git clone --branch v1.11.3 https://github.com/SagerNet/sing-box.git core
           cd core
           
-          # 2. 补齐依赖并整理 Module
+          # 2. 整理依赖
           go mod download
-          go mod tidy
           
-          # 3. 强制开启 Module 模式并执行绑定
-          # 重点：指定完整的包名 github.com/SagerNet/sing-box/lib/mobile
-          # 这样 gobind 才能正确通过 go.mod 找到导出的接口
+          # 3. 核心修正：编译入口改为 experimental/libbox
+          # 这是新版内核唯一正确的导出入口
+          # 增加 -tags 确保所有功能（如 QUIC/Shadowsocks）的接口都被导出
           export GO111MODULE=on
           gomobile bind -v \
             -target ios \
             -iosversion 15.0 \
+            -tags "with_quic with_dhcp with_wireguard with_shadowsocks with_ech" \
             -o ../Libbox.xcframework \
-            github.com/SagerNet/sing-box/lib/mobile
+            github.com/SagerNet/sing-box/experimental/libbox
           
           cd ..
           ls -d Libbox.xcframework
@@ -78,5 +78,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sing-box-v1.11.3-unsigned
+          name: sing-box-unsigned
           path: sing-box-unsigned.ipa
