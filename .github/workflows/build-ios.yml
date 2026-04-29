@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (Auto-Discovery)
+name: Build Unsigned IPA (Final Fix)
 
 on:
   workflow_dispatch:
@@ -18,56 +18,37 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Locate and Build Go Core
-        run: |
-          # 全盘寻找 go.mod
-          MOD_PATH=$(find . -name "go.mod" -print -quit)
-          if [ -n "$MOD_PATH" ]; then
-            MOD_DIR=$(dirname "$MOD_PATH")
-            echo "Found Go module in $MOD_DIR, building..."
-            cd "$MOD_DIR"
-            go mod tidy
-            
-            # 寻找编译脚本
-            SCRIPT=$(find . -name "gen_framework" | head -n 1)
-            if [ -n "$SCRIPT" ]; then
-              go run "$SCRIPT" --platform ios
-            fi
-          else
-            echo "No go.mod found. This project might use SPM for remote dependencies."
-          fi
-
       - name: Xcode Build (No Sign)
         run: |
-          # 1. 自动解析项目文件
-          PROJ=$(find . -name "*.xcodeproj" -maxdepth 2 | head -n 1)
+          # 1. 直接指定项目和 Scheme
+          # 根目录下你的项目叫 sing-box.xcodeproj，iOS 对应的 Scheme 是 SFI
           
-          # 2. 尝试解析可用 Scheme (优先找 SFI 或 sing-box)
-          SCHEME=$(xcodebuild -list -project "$PROJ" | grep -E "SFI|sing-box" | head -n 1 | tr -d ' ')
-          echo "Using Scheme: $SCHEME"
-          
-          # 3. 强制解析远程依赖并归档
-          xcodebuild -project "$PROJ" \
-                     -scheme "$SCHEME" \
+          xcodebuild -project sing-box.xcodeproj \
+                     -scheme SFI \
                      -configuration Release \
                      -archivePath build/sing-box.xcarchive \
-                     -resolvePackageDependencies \
                      archive \
                      CODE_SIGNING_ALLOWED=NO \
                      CODE_SIGNING_REQUIRED=NO \
                      CODE_SIGN_IDENTITY="" \
                      PROVISIONING_PROFILE="" \
-                     AD_HOC_CODE_SIGNING_ALLOWED=YES
+                     AD_HOC_CODE_SIGNING_ALLOWED=YES \
+                     COMPILER_INDEX_STORE_ENABLE=NO
 
       - name: Package Unsigned IPA
         run: |
           mkdir -p Payload
-          # 在归档目录中深度搜索 .app
-          APP_PATH=$(find build/sing-box.xcarchive -name "*.app" -type d | grep -v "Services" | head -n 1)
+          # 在归档中寻找主程序 .app
+          # 注意：新版可能在 SFI.app 或 sing-box.app，我们用 find 动态抓取
+          APP_PATH=$(find build/sing-box.xcarchive/Products/Applications -name "*.app" -maxdepth 1 | head -n 1)
+          
           if [ -z "$APP_PATH" ]; then
-            echo "Build failed: .app not found."
+            echo "Error: .app file not found! Archive content:"
+            ls -R build/sing-box.xcarchive
             exit 1
           fi
+          
+          echo "Packing $APP_PATH into IPA..."
           cp -r "$APP_PATH" Payload/
           zip -r sing-box-unsigned.ipa Payload
 
