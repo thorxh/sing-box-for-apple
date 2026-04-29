@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (Fix Libbox Missing)
+name: Build Unsigned IPA (Download Core Fix)
 
 on:
   workflow_dispatch:
@@ -13,39 +13,31 @@ jobs:
           submodules: 'recursive'
           fetch-depth: 0
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache: true
-
-      - name: Install gomobile
+      - name: Download Prebuilt Libbox
         run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          gomobile init
-
-      - name: Compile Libbox Framework
-        run: |
-          # 1. 寻找包含 go.mod 的核心目录（通常是 sing-box 核心）
-          # 新版项目通常在根目录下执行特定的 go run 脚本来生成这个 xcframework
-          # 我们尝试直接运行生成脚本，并指定输出名称为 Libbox
+          # 1. 从官方获取最新的预编译内核
+          # 这里我们直接从 SagerNet 的 releases 或指定的源下载
+          # 如果你的仓库有特定的版本需求，可以调整 URL
+          VERSION=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "Fetching sing-box core $VERSION"
           
-          SCRIPT=$(find . -name "gen_framework" | head -n 1)
-          echo "Found generator script at: $SCRIPT"
+          # 下载 iOS 平台的 xcframework
+          # 注意：文件名必须精准匹配 Xcode 报错要求的 "Libbox.xcframework"
+          curl -Lo libbox.zip "https://github.com/SagerNet/sing-box/releases/download/$VERSION/libbox-xcframework.zip"
+          unzip libbox.zip
           
-          # 执行编译，并将产物命名为 Libbox.xcframework
-          # 注意：--out 参数是关键，必须对应报错信息里的路径
-          go run "$SCRIPT" --platform ios --out ./Libbox.xcframework
+          # 2. 核心步骤：重命名并移动到根目录
+          # 报错说要在根目录找 Libbox.xcframework，我们就给它一个
+          mv libbox.xcframework Libbox.xcframework
 
       - name: Xcode Build (No Sign)
         run: |
-          # 确保 Libbox.xcframework 就在当前目录下
-          ls -d Libbox.xcframework || (echo "Libbox not found!" && exit 1)
-
+          # 强制解析远程依赖并构建
           xcodebuild -project sing-box.xcodeproj \
                      -scheme SFI \
                      -configuration Release \
                      -archivePath build/sing-box.xcarchive \
+                     -resolvePackageDependencies \
                      archive \
                      CODE_SIGNING_ALLOWED=NO \
                      CODE_SIGNING_REQUIRED=NO \
@@ -57,6 +49,7 @@ jobs:
       - name: Package Unsigned IPA
         run: |
           mkdir -p Payload
+          # 寻找生成的 .app
           APP_PATH=$(find build/sing-box.xcarchive/Products/Applications -name "*.app" -maxdepth 1 | head -n 1)
           if [ -z "$APP_PATH" ]; then
             echo "Error: .app file not found!"
