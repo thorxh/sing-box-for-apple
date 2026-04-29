@@ -1,4 +1,4 @@
-name: Build Unsigned IPA for EasySign
+name: Build Unsigned IPA for New SagerNet
 
 on:
   workflow_dispatch:
@@ -10,14 +10,8 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          submodules: 'recursive' # 确保子模块拉取
+          submodules: 'recursive'
           fetch-depth: 0
-
-      - name: List Directory Structure (Debug)
-        run: |
-          echo "--- Root Directory Content ---"
-          ls -R
-          echo "--- End of Structure ---"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -30,40 +24,19 @@ jobs:
           go install golang.org/x/mobile/cmd/gomobile@latest
           gomobile init
 
-      - name: Build SFA Framework
+      - name: Build Frameworks via Makefile
         run: |
-          # 针对 SagerNet 仓库的特殊路径处理
-          # 尝试进入可能包含 go.mod 的目录
-          if [ -d "sing-box" ]; then
-            cd sing-box
-          fi
-          
-          # 检查当前目录
-          ls -F
-          
-          # 如果还是没有 go.mod，尝试手动初始化（兜底方案）
-          if [ ! -f "go.mod" ]; then
-             go mod init github.com/SagerNet/sing-box-for-apple || true
-          fi
-          
-          go mod tidy
-          
-          # 执行编译脚本 - 此时根据 Debug 结果调整路径
-          # 我们尝试在全项目搜索 gen_framework 并执行
-          SCRIPT_PATH=$(find . -name "gen_framework" | head -n 1)
-          if [ -z "$SCRIPT_PATH" ]; then
-            echo "Error: gen_framework not found!"
-            exit 1
-          fi
-          go run "$SCRIPT_PATH" --platform ios
+          # 既然根目录有 Makefile，我们直接调用它
+          # 针对新版，通常是这个命令来生成 Apple 各平台的库
+          make xcframework
 
       - name: Xcode Build (No Sign)
         run: |
-          WORKSPACE=$(find . -name "*.xcworkspace" | head -n 1)
-          xcodebuild -workspace "$WORKSPACE" \
-                     -scheme SFA \
+          # 新版工程文件名改成了 sing-box.xcodeproj
+          xcodebuild -project sing-box.xcodeproj \
+                     -scheme SFI \
                      -configuration Release \
-                     -archivePath build/SFA.xcarchive \
+                     -archivePath build/sing-box.xcarchive \
                      archive \
                      CODE_SIGNING_ALLOWED=NO \
                      CODE_SIGNING_REQUIRED=NO \
@@ -74,8 +47,8 @@ jobs:
       - name: Package Unsigned IPA
         run: |
           mkdir -p Payload
-          APP_PATH=$(find build/SFA.xcarchive/Products/Applications -name "*.app" | head -n 1)
-          cp -r "$APP_PATH" Payload/
+          # 查找生成的 .app (SFI 代表 Sing-box For iOS)
+          find build/sing-box.xcarchive/Products/Applications -name "*.app" -exec cp -r {} Payload/ \;
           zip -r sing-box-unsigned.ipa Payload
 
       - name: Upload Artifact
