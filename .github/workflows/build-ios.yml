@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (Library Focus)
+name: Build Unsigned IPA (Auto-Discovery)
 
 on:
   workflow_dispatch:
@@ -17,38 +17,41 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-          cache: true
 
-      - name: Install gomobile
+      - name: Locate and Build Go Core
         run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          gomobile init
-
-      - name: Build SFA Framework
-        # 核心变动：根据你之前的目录树，进入 Library 目录执行
-        working-directory: Library
-        run: |
-          # 如果这里没有 go.mod，我们就去它下面的目录找，或者直接执行编译脚本
-          # 针对新版 sing-box-for-apple，代码通常就在这
-          go mod tidy || echo "No mod file here, attempting to run script anyway"
-          
-          # 查找 gen_framework 脚本（可能在 ./cmd/gen_framework）
-          SCRIPT=$(find . -name "gen_framework" | head -n 1)
-          if [ -z "$SCRIPT" ]; then
-             echo "Error: gen_framework not found in Library!"
-             ls -R
-             exit 1
+          # 全盘寻找 go.mod
+          MOD_PATH=$(find . -name "go.mod" -print -quit)
+          if [ -n "$MOD_PATH" ]; then
+            MOD_DIR=$(dirname "$MOD_PATH")
+            echo "Found Go module in $MOD_DIR, building..."
+            cd "$MOD_DIR"
+            go mod tidy
+            
+            # 寻找编译脚本
+            SCRIPT=$(find . -name "gen_framework" | head -n 1)
+            if [ -n "$SCRIPT" ]; then
+              go run "$SCRIPT" --platform ios
+            fi
+          else
+            echo "No go.mod found. This project might use SPM for remote dependencies."
           fi
-          go run "$SCRIPT" --platform ios
 
       - name: Xcode Build (No Sign)
         run: |
-          # 在根目录进行 Xcode 构建
-          PROJ=$(find . -name "*.xcodeproj" -maxdepth 1 | head -n 1)
+          # 1. 自动解析项目文件
+          PROJ=$(find . -name "*.xcodeproj" -maxdepth 2 | head -n 1)
+          
+          # 2. 尝试解析可用 Scheme (优先找 SFI 或 sing-box)
+          SCHEME=$(xcodebuild -list -project "$PROJ" | grep -E "SFI|sing-box" | head -n 1 | tr -d ' ')
+          echo "Using Scheme: $SCHEME"
+          
+          # 3. 强制解析远程依赖并归档
           xcodebuild -project "$PROJ" \
-                     -scheme SFI \
+                     -scheme "$SCHEME" \
                      -configuration Release \
                      -archivePath build/sing-box.xcarchive \
+                     -resolvePackageDependencies \
                      archive \
                      CODE_SIGNING_ALLOWED=NO \
                      CODE_SIGNING_REQUIRED=NO \
@@ -59,9 +62,10 @@ jobs:
       - name: Package Unsigned IPA
         run: |
           mkdir -p Payload
-          APP_PATH=$(find build/sing-box.xcarchive/Products/Applications -name "*.app" | head -n 1)
+          # 在归档目录中深度搜索 .app
+          APP_PATH=$(find build/sing-box.xcarchive -name "*.app" -type d | grep -v "Services" | head -n 1)
           if [ -z "$APP_PATH" ]; then
-            echo "Error: .app file not found!"
+            echo "Build failed: .app not found."
             exit 1
           fi
           cp -r "$APP_PATH" Payload/
