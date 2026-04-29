@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (iOS Target Only)
+name: Build Unsigned IPA (Final Path Discovery)
 
 on:
   workflow_dispatch:
@@ -21,7 +21,6 @@ jobs:
 
       - name: Install SagerNet Gomobile Tools
         run: |
-          # 必须使用 SagerNet 的 fork 版本
           go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.4
           go install github.com/sagernet/gomobile/cmd/gobind@v0.1.4
           
@@ -35,30 +34,40 @@ jobs:
           git clone --branch v1.13.11 https://github.com/SagerNet/sing-box.git core
           cd core
           
-          # 2. 下载依赖
+          # 2. 补齐依赖
           go mod download
           
-          # 3. 核心修复：显式指定 -target ios
-          # 这会告诉脚本跳过 Android 编译，从而避开 Java 环境检查和 -javapkg 错误
+          # 3. 运行官方脚本 (锁定 iOS 平台)
           export GO111MODULE=on
+          # 增加 -debug 看看详细输出，如果还找不到产物，日志里会有线索
           go run ./cmd/internal/build_libbox -platform ios -target ios
           
-          # 4. 移动产物
           cd ..
-          FRAMEWORK_PATH=$(find core -name "Libbox.xcframework" -type d | head -n 1)
-          if [ -n "$FRAMEWORK_PATH" ]; then
-            mv "$FRAMEWORK_PATH" ./Libbox.xcframework
+          
+          # 4. 强力搜寻产物
+          echo "Searching for generated xcframework..."
+          # 递归寻找所有 .xcframework 目录
+          FOUND_PATH=$(find core -name "*.xcframework" -type d | head -n 1)
+          
+          if [ -n "$FOUND_PATH" ]; then
+            echo "Found framework at: $FOUND_PATH"
+            # 统一重命名为 Xcode 项目引用的 Libbox.xcframework
+            rm -rf ./Libbox.xcframework
+            cp -r "$FOUND_PATH" ./Libbox.xcframework
+            echo "Successfully moved to ./Libbox.xcframework"
           else
-            echo "Error: Libbox.xcframework not generated!"
+            echo "CRITICAL ERROR: No .xcframework was found anywhere in core/ directory."
+            echo "Listing core directory structure for debugging:"
+            ls -R core
             exit 1
           fi
-          
-          ls -d Libbox.xcframework
 
       - name: Xcode Build (No Sign)
         run: |
-          PROJ=$(find . -name "*.xcodeproj" -maxdepth 1 | head -n 1)
+          # 确保 Libbox 在位
+          ls -d Libbox.xcframework
           
+          PROJ=$(find . -name "*.xcodeproj" -maxdepth 1 | head -n 1)
           xcodebuild -project "$PROJ" \
                      -scheme SFI \
                      -configuration Release \
