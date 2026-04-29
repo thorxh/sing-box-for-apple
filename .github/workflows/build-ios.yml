@@ -40,7 +40,7 @@ jobs:
         run: |
           PROJ="sing-box.xcodeproj"
           SCHEME="SFI"
-          
+          
           # 1. 强制解析并拉取依赖
           xcodebuild -resolvePackageDependencies -project "$PROJ" -scheme "$SCHEME"
 
@@ -65,7 +65,7 @@ jobs:
           echo "Deep searching for .app..."
           # 在 build_output 里寻找主程序包
           APP_PATH=$(find build_output -name "SFI.app" -type d | grep "Release-iphoneos" | head -n 1)
-          
+          
           if [ -z "$APP_PATH" ]; then
             # 如果找不到 SFI.app，就找任何 .app
             APP_PATH=$(find build_output -name "*.app" -type d | grep "Release-iphoneos" | head -n 1)
