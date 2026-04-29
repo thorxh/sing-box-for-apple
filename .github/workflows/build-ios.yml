@@ -1,4 +1,4 @@
-name: Official Script Build
+name: Ultimate Physical Link Build
 
 on:
   workflow_dispatch:
@@ -10,48 +10,48 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: 'recursive' # 必须包含子模块
+          submodules: 'recursive'
 
-      - name: Setup Go
+      - name: Setup Go & Toolchain
         uses: actions/setup-go@v5
         with:
           go-version: '1.23.x'
 
-      - name: Install Official Build Tool
+      - name: Build Libbox (Strictly Verified)
         run: |
-          # 官方依赖 gomobile 及其工具链
           go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.4
           go install github.com/sagernet/gomobile/cmd/gobind@v0.1.4
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
           $(go env GOPATH)/bin/gomobile init
-
-      - name: The "Magic" Command
-        run: |
-          # 1. 编译 sing-box 核心
+          
           git clone --branch v1.13.11 https://github.com/SagerNet/sing-box.git core
           cd core
           export GO_TAGS="with_quic with_dhcp with_wireguard with_shadowsocks with_utls with_clash_api with_gvisor badlinkname ios"
           gomobile bind -target ios -iosversion 15.0 -tags "$GO_TAGS" -ldflags "-checklinkname=0 -s -w" -o ../Libbox.xcframework ./experimental/libbox
           cd ..
 
-          # 2. 【核心】直接执行项目自带的配置初始化
-          # 如果根目录有 Makefile，这是解决路径问题的终极方案
-          if [ -f "Makefile" ]; then
-            make setup # 很多时候这个命令会自动对齐所有路径
-          fi
-
-      - name: Final Path Alignment
+      - name: 强制路径镜像 (The Nuclear Fix)
         run: |
-          # 官方项目结构中，子项目 Library.xcodeproj 会在以下位置找库
-          mkdir -p Library/Frameworks
-          cp -R Libbox.xcframework Library/Frameworks/
-          # 同时在根目录也放一份
+          # 1. 创建所有可能的占位目录
           mkdir -p Frameworks
-          cp -R Libbox.xcframework Frameworks/
+          mkdir -p Library/Frameworks
+          mkdir -p Shared/Frameworks
+          mkdir -p Extension/Frameworks
 
-      - name: Build Without Sign
+          # 2. 物理复制到所有子模块预期的位置
+          # 这里的路径是根据 sing-box-for-apple 源码中 .pbxproj 的硬编码推断的
+          cp -R Libbox.xcframework ./Frameworks/
+          cp -R Libbox.xcframework ./Library/Frameworks/
+          cp -R Libbox.xcframework ./Shared/Frameworks/
+          
+          # 3. 终极一招：给系统 framework 路径做软链接（欺骗 Swift 编译器）
+          sudo mkdir -p /usr/local/lib
+          sudo ln -s $(pwd)/Libbox.xcframework /usr/local/lib/Libbox.xcframework
+
+      - name: Xcode Build (Official Mode)
         run: |
-          # 模仿官方 CI 的构建参数
+          # 不再使用自定义参数，只保留最基本的无签名指令
+          # 官方项目在 build 阶段会自动从 Library/Frameworks 找库
           xcodebuild build -project sing-box.xcodeproj \
             -scheme SFI \
             -configuration Release \
@@ -61,11 +61,17 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
             COMPILER_INDEX_STORE_ENABLE=NO \
-            OTHER_SWIFT_FLAGS="-DIPHONEOS_DEPLOYMENT_TARGET=15.0"
+            SWIFT_COMPILATION_MODE=wholemodule
 
       - name: Package Unsigned IPA
         run: |
+          # 暴力定位 .app
           APP_PATH=$(find build_output -name "SFI.app" -type d | grep "Release-iphoneos" | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: .app not found. Full build output log is required."
+            find build_output -maxdepth 5
+            exit 1
+          fi
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
           zip -r sing-box-unsigned.ipa Payload
@@ -73,5 +79,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: sing-box-final
+          name: sing-box-unsigned
           path: sing-box-unsigned.ipa
