@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (GOPATH Injection Fix)
+name: Build Unsigned IPA (Official Script Strategy)
 
 on:
   workflow_dispatch:
@@ -19,43 +19,27 @@ jobs:
           go-version: '1.25'
           cache: true
 
-      - name: Install and Inject Mobile Source
+      - name: Install Gomobile Tools
         run: |
-          # 1. 设置环境变量
-          GOPATH=$(go env GOPATH)
-          echo "$GOPATH/bin" >> $GITHUB_PATH
-          
-          # 2. 安装二进制工具
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
-          
-          # 3. 核心注入：手动创建目录并将 mobile 源码克隆到 GOPATH
-          # 这是解决 "no Go package in golang.org/x/mobile/bind" 的终极手段
-          mkdir -p $GOPATH/src/golang.org/x
-          git clone --depth 1 https://github.com/golang/mobile.git $GOPATH/src/golang.org/x/mobile
-          
-          # 4. 初始化
-          $GOPATH/bin/gomobile init
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+          $(go env GOPATH)/bin/gomobile init
 
       - name: Build Libbox Framework
         run: |
-          # 克隆内核
+          # 1. 克隆内核
           git clone --branch v1.13.11 https://github.com/SagerNet/sing-box.git core
           cd core
           
-          # 这一步确保内核自己的依赖也是齐的
-          go mod download
+          # 2. 关键点：使用内核自带的生成脚本
+          # 这个脚本会自动处理依赖和 gobind 导出问题
+          # 我们把输出路径指向上一级的 Libbox.xcframework
+          go run ./cmd/gen_framework --platform ios
           
-          # 强制关闭 CGO 限制，确保 gomobile 能够交叉编译
-          export CGO_ENABLED=1
-          
-          # 执行编译
-          # 我们直接指定全路径包名，并让 gomobile 在这个 context 下运行
-          gomobile bind -v \
-            -target ios \
-            -iosversion 15.0 \
-            -o ../Libbox.xcframework \
-            github.com/SagerNet/sing-box/lib/mobile
+          # 3. 移动产物到 Xcode 预期的位置
+          # 脚本默认生成在当前目录下的 sing-box.xcframework 或类似名字
+          mv *.xcframework ../Libbox.xcframework
           
           cd ..
           ls -d Libbox.xcframework
