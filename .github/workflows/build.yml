@@ -1,0 +1,52 @@
+name: Build iOS IPA
+
+# 触发条件：手动触发 或 推送到 dev/main 分支时自动构建（可按需调整）
+on:
+  workflow_dispatch:          # 允许手动运行
+  push:
+    branches: [ "dev" ]      # 默认监听 dev 分支，因为 sing-box-for-apple 主要在 dev 开发
+
+jobs:
+  build:
+    runs-on: macos-latest    # 必须使用 macOS 运行器，提供 Xcode 环境
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # 可选：如果项目使用了 Swift Package Manager 的二进制依赖（如 libcore），
+      # 可能需要先解析依赖。Xcode 构建时会自动处理，但可显式调用确保顺利。
+      - name: 解析 Swift 包依赖
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project sing-box-for-apple.xcodeproj \
+            -scheme SFI
+
+      # 核心步骤：构建 .xcarchive 存档
+      - name: 构建存档
+        run: |
+          xcodebuild archive \
+            -project sing-box-for-apple.xcodeproj \
+            -scheme SFI \
+            -sdk iphoneos \
+            -configuration Release \
+            -archivePath ./build/SFI.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE=""
+
+      # 从存档中提取 .app 并打包为 IPA
+      - name: 打包 IPA
+        run: |
+          mkdir -p Payload
+          cp -R ./build/SFI.xcarchive/Products/Applications/SFI.app Payload/
+          zip -r SFI.ipa Payload
+          rm -rf Payload
+
+      # 上传 IPA 为构建产物，可在 Actions 页面下载
+      - name: 上传 IPA 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: SFI.ipa
+          path: SFI.ipa
