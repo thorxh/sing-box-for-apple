@@ -25,15 +25,27 @@ jobs:
           gomobile init
 
       - name: Build SFA Framework
-        # 关键点：进入 SFA 目录执行，那里才有 go.mod 和构建脚本
-        working-directory: SFA
         run: |
+          # 自动探测 go.mod 所在目录并进入执行
+          TARGET_DIR=$(find . -name "go.mod" -exec dirname {} \; | head -n 1)
+          echo "Found go.mod in $TARGET_DIR"
+          cd "$TARGET_DIR"
+          
+          # 确保在有 gen_framework 的地方运行
+          # 如果当前目录没有 cmd/gen_framework，就去上一级找，或者全局找
+          GEN_SCRIPT=$(find . -name "gen_framework" -path "*/cmd/*" | head -n 1)
+          GEN_DIR=$(dirname $(dirname "$GEN_SCRIPT"))
+          
+          echo "Running build script in $GEN_DIR"
+          cd "$GEN_DIR"
           go mod tidy
           go run ./cmd/gen_framework --platform ios
 
       - name: Xcode Build (No Sign)
         run: |
-          xcodebuild -workspace SFA.xcworkspace \
+          # 找到工程文件所在目录执行
+          WORKSPACE=$(find . -name "*.xcworkspace" | head -n 1)
+          xcodebuild -workspace "$WORKSPACE" \
                      -scheme SFA \
                      -configuration Release \
                      -archivePath build/SFA.xcarchive \
@@ -47,7 +59,9 @@ jobs:
       - name: Package Unsigned IPA
         run: |
           mkdir -p Payload
-          find build/SFA.xcarchive/Products/Applications -name "*.app" -exec cp -r {} Payload/ \;
+          # 动态寻找构建出的 .app 并打包
+          APP_PATH=$(find build/SFA.xcarchive/Products/Applications -name "*.app" | head -n 1)
+          cp -r "$APP_PATH" Payload/
           zip -r sing-box-unsigned.ipa Payload
 
       - name: Upload Artifact
