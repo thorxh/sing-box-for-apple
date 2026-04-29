@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (Final Linker Fix)
+name: Build Unsigned IPA (Force Build)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
           go-version: '1.23.x'
           cache: true
 
-      - name: Install SagerNet Gomobile
+      - name: Install SagerNet Gomobile Tools
         run: |
           go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.4
           go install github.com/sagernet/gomobile/cmd/gobind@v0.1.4
@@ -32,48 +32,52 @@ jobs:
           export GO_TAGS="with_quic with_dhcp with_wireguard with_shadowsocks with_utls with_clash_api with_gvisor badlinkname ios"
           export GO_LDFLAGS="-checklinkname=0 -s -w"
           export GO111MODULE=on
-          # 编译产物直接输出到根目录
           gomobile bind -target ios -iosversion 15.0 -tags "$GO_TAGS" -ldflags "$GO_LDFLAGS" -o ../Libbox.xcframework ./experimental/libbox
           cd ..
-          [ -d "Libbox.xcframework" ] && echo "Libbox.xcframework generated successfully."
+          [ -d "Libbox.xcframework" ] && echo "Libbox generated."
 
-      - name: Xcode Build (No Sign)
+      - name: Xcode Build (No Sign Force)
         run: |
           PROJ="sing-box.xcodeproj"
           SCHEME="SFI"
-          
-          # 获取当前绝对路径，用于传递给 Xcode
-          CUR_DIR=$(pwd)
+          
+          # 1. 强制解析并拉取依赖
+          xcodebuild -resolvePackageDependencies -project "$PROJ" -scheme "$SCHEME"
 
-          xcodebuild archive -project "$PROJ" \
+          # 2. 改用 build 动作，并强制输出到指定目录
+          # 使用 -sdk iphoneos 确保是 ARM64 真机版本
+          xcodebuild build -project "$PROJ" \
                      -scheme "$SCHEME" \
                      -configuration Release \
-                     -destination 'generic/platform=iOS' \
-                     -archivePath build/sing-box.xcarchive \
-                     -resolvePackageDependencies \
-                     FRAMEWORK_SEARCH_PATHS="$CUR_DIR" \
-                     OTHER_LDFLAGS="-framework Libbox" \
+                     -sdk iphoneos \
+                     -derivedDataPath build_output \
+                     -framework Libbox \
+                     FRAMEWORK_SEARCH_PATHS="$(pwd)" \
                      CODE_SIGNING_ALLOWED=NO \
                      CODE_SIGNING_REQUIRED=NO \
                      CODE_SIGN_IDENTITY="" \
                      PROVISIONING_PROFILE="" \
                      AD_HOC_CODE_SIGNING_ALLOWED=YES \
-                     COMPILER_INDEX_STORE_ENABLE=NO \
-                     SKIP_INSTALL=NO
+                     COMPILER_INDEX_STORE_ENABLE=NO
 
       - name: Package Unsigned IPA
         run: |
-          echo "Locating .app in archive..."
-          # 搜索路径：Archive 内部的 Products/Applications
-          APP_PATH=$(find build/sing-box.xcarchive -name "*.app" -type d | head -n 1)
-          
+          echo "Deep searching for .app..."
+          # 在 build_output 里寻找主程序包
+          APP_PATH=$(find build_output -name "SFI.app" -type d | grep "Release-iphoneos" | head -n 1)
+          
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: App not found. Listing archive structure:"
-            ls -R build
+            # 如果找不到 SFI.app，就找任何 .app
+            APP_PATH=$(find build_output -name "*.app" -type d | grep "Release-iphoneos" | head -n 1)
+          fi
+
+          if [ -z "$APP_PATH" ]; then
+            echo "CRITICAL ERROR: No .app file found."
+            ls -R build_output | grep ".app" || echo "No .app even in recursive list"
             exit 1
           fi
-          
-          echo "Packaging: $APP_PATH"
+
+          echo "Found app at: $APP_PATH"
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
           zip -r sing-box-unsigned.ipa Payload
