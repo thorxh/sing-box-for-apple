@@ -1,10 +1,10 @@
-name: Check Libbox Compilation (Debug Only)
+name: Build Unsigned IPA (Final Step)
 
 on:
   workflow_dispatch:
 
 jobs:
-  debug-check:
+  build:
     runs-on: macos-latest
     steps:
       - name: Checkout Code
@@ -25,55 +25,71 @@ jobs:
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
           $(go env GOPATH)/bin/gomobile init
 
-      - name: Build & Verify Libbox
+      - name: Build Libbox Framework (Proven Method)
         run: |
           git clone --branch v1.13.11 https://github.com/SagerNet/sing-box.git core
           cd core
-          # 移除冲突标签，加入官方要求的 badlinkname
+          # 沿用刚才验证成功的参数
           export GO_TAGS="with_quic with_dhcp with_wireguard with_shadowsocks with_utls with_clash_api with_gvisor badlinkname ios"
           export GO_LDFLAGS="-checklinkname=0 -s -w"
-          
-          echo ">>> 正在开始编译 Libbox..."
           export GO111MODULE=on
-          gomobile bind -v \
-            -target ios \
-            -iosversion 15.0 \
-            -tags "$GO_TAGS" \
-            -ldflags "$GO_LDFLAGS" \
-            -o ../Libbox.xcframework \
-            ./experimental/libbox
-          
+          gomobile bind -target ios -iosversion 15.0 -tags "$GO_TAGS" -ldflags "$GO_LDFLAGS" -o ../Libbox.xcframework ./experimental/libbox
           cd ..
           
-          echo ">>> [检查 1] 目录是否存在？"
-          if [ -d "Libbox.xcframework" ]; then
-            echo "✅ Libbox.xcframework 目录已生成。"
-          else
-            echo "❌ 错误：未生成 Libbox.xcframework。"
+          # 【核心修正】物理部署：将框架放入项目各层级搜索目录，防止 Swift 导入失败
+          mkdir -p Frameworks
+          cp -r Libbox.xcframework Frameworks/
+          mkdir -p Library/Frameworks
+          cp -r Libbox.xcframework Library/Frameworks/
+          echo "Libbox deployed to ./Frameworks and ./Library/Frameworks"
+
+      - name: Xcode Build (Skip All Signing)
+        run: |
+          PROJ="sing-box.xcodeproj"
+          SCHEME="SFI"
+          
+          # 1. 预解析依赖
+          xcodebuild -resolvePackageDependencies -project "$PROJ" -scheme "$SCHEME"
+
+          # 2. 强制构建产物
+          # 使用 build 动作避开 archive 极其严格的 AppGroup 签名校验
+          xcodebuild build -project "$PROJ" \
+                     -scheme "$SCHEME" \
+                     -configuration Release \
+                     -sdk iphoneos \
+                     -derivedDataPath build_output \
+                     FRAMEWORK_SEARCH_PATHS="$(pwd)/Frameworks $(pwd)/Library/Frameworks" \
+                     CODE_SIGNING_ALLOWED=NO \
+                     CODE_SIGNING_REQUIRED=NO \
+                     CODE_SIGN_IDENTITY="" \
+                     PROVISIONING_PROFILE="" \
+                     AD_HOC_CODE_SIGNING_ALLOWED=YES \
+                     COMPILER_INDEX_STORE_ENABLE=NO
+
+      - name: Package Unsigned IPA
+        run: |
+          echo "Locating SFI.app..."
+          # 从生成的 DerivedData 中精准抓取 .app
+          APP_PATH=$(find build_output -name "SFI.app" -type d | grep "Release-iphoneos" | head -n 1)
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "Searching for any .app as fallback..."
+            APP_PATH=$(find build_output -name "*.app" -type d | grep "Release-iphoneos" | head -n 1)
+          fi
+
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: .app file not found."
+            find build_output -name "*.app"
             exit 1
           fi
+          
+          echo "Success! Found app at: $APP_PATH"
+          mkdir -p Payload
+          cp -r "$APP_PATH" Payload/
+          zip -r sing-box-unsigned.ipa Payload
 
-          echo ">>> [检查 2] 内部架构是否包含 ios-arm64？"
-          # 检查是否有真机架构，这是 IPA 运行的核心
-          if ls Libbox.xcframework | grep -q "ios-arm64"; then
-            echo "✅ 包含 ios-arm64 架构。"
-          else
-            echo "❌ 错误：缺少真机架构，可能只编译了模拟器版本。"
-            ls -R Libbox.xcframework
-            exit 1
-          fi
-
-          echo ">>> [检查 3] 符号导出检查 (Critical)"
-          # 使用 nm 命令查看生成的二进制文件是否包含 Libbox 的核心入口
-          # 这一步能彻底确认之前的 'no exported names' 是否真的解决了
-          BINARY_PATH=$(find Libbox.xcframework/ios-arm64 -name "Libbox" -type f | head -n 1)
-          if [ -f "$BINARY_PATH" ]; then
-            if nm "$BINARY_PATH" | grep -q "Libbox"; then
-              echo "✅ 符号导出验证通过：检测到 Libbox 相关接口。"
-            else
-              echo "❌ 警告：二进制文件存在，但未发现导出符号。Xcode 链接必败。"
-              exit 1
-            fi
-          fi
-
-          echo "🎉 恭喜！Libbox 编译阶段完美通过，可以进行下一步 Xcode 构建。"
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sing-box-v1.13.11-unsigned
+          path: sing-box-unsigned.ipa
