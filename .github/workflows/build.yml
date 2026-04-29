@@ -1,40 +1,48 @@
-name: Build Unsigned IPA
+name: Build Unsigned IPA from Scratch
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-sfi:
     runs-on: macos-latest
-
     steps:
-      - name: 检出代码 (含子模块)
+      # 1. 克隆 iOS 客户端源码
+      - name: Checkout sing-box-for-apple
         uses: actions/checkout@v4
         with:
+          repository: SagerNet/sing-box-for-apple
           submodules: 'recursive'
           fetch-depth: 0
 
-      - name: 设置 Go 环境
+      # 设置 Go 环境
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.23'
           cache: true
 
-      - name: 安装 SagerNet 定制的 gomobile
+      # 2. 安装并初始化 gomobile
+      - name: Install and Setup gomobile
         run: |
-          go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.4
-          go install github.com/sagernet/gomobile/cmd/gobind@v0.1.4
-          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
-          $(go env GOPATH)/bin/gomobile init
+          go install github.com/sagernet/gomobile/cmd/gomobile@latest
+          go install github.com/sagernet/gomobile/cmd/gobind@latest
+          gomobile init
 
-      - name: 编译 Libbox.xcframework (使用仓库自带脚本)
+      # 3. 克隆核心库 / sing-box 源码，并切换到指定版本
+      - name: Clone sing-box core
         run: |
-          # 赋予脚本执行权限
-          chmod +x compile_libbox.sh
-          # 运行编译，指定内核版本（默认最新 dev 分支，也可传参）
-          bash compile_libbox.sh
+          git clone  -b v1.13.11  # 或指定其他版本
 
-      - name: Xcode 归档构建 (无签名)
+      # 4. 编译生成 Libbox.xcframework，这一步是核心
+      - name: Build Libbox.xcframework
+        run: |
+          # 假设 sing-box 核心代码与 apple 项目保持同级的目录结构
+          cd ../sing-box
+          make lib_install
+
+      # 5. Xcode 归档构建 (无签名)
+      - name: Archive (No Signing)
         run: |
           xcodebuild archive \
             -project sing-box.xcodeproj \
@@ -44,20 +52,18 @@ jobs:
             -archivePath ./build/SFI.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            PROVISIONING_PROFILE="" \
-            AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            COMPILER_INDEX_STORE_ENABLE=NO
+            PROVISIONING_PROFILE=""
 
-      - name: 打包 IPA
+      # 6. 打包 IPA
+      - name: Package IPA
         run: |
           mkdir -p Payload
           APP_PATH=$(find build/SFI.xcarchive/Products/Applications -name "*.app" -maxdepth 1 | head -n 1)
           cp -r "$APP_PATH" Payload/
           zip -r SFI.ipa Payload
-          rm -rf Payload
 
-      - name: 上传产物
+      # 7. 上传产物
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: SFI-unsigned.ipa
