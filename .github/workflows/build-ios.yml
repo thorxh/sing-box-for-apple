@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (Official Script Strategy)
+name: Build Unsigned IPA (GOPATH Injection Strategy)
 
 on:
   workflow_dispatch:
@@ -16,39 +16,48 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.23'
           cache: true
 
-      - name: Install Gomobile Tools
+      - name: Install SagerNet Gomobile Tools
         run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
-          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
-          $(go env GOPATH)/bin/gomobile init
+          # 必须使用 sagernet 的 fork 版本，否则 iOS 绑定会报错
+          go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.4
+          go install github.com/sagernet/gomobile/cmd/gobind@v0.1.4
+          
+          # 将工具加入环境变量
+          GOPATH=$(go env GOPATH)
+          echo "$GOPATH/bin" >> $GITHUB_PATH
+          
+          # 初始化
+          $GOPATH/bin/gomobile init
 
-      - name: Build Libbox Framework
+      - name: Build Libbox Framework (Manual Bind)
         run: |
-          # 1. 克隆内核
-          git clone --branch v1.13.11 https://github.com/SagerNet/sing-box.git core
+          # 1. 克隆内核源码到指定目录
+          git clone --branch v1.11.3 https://github.com/SagerNet/sing-box.git core
           cd core
           
-          # 2. 关键点：使用内核自带的生成脚本
-          # 这个脚本会自动处理依赖和 gobind 导出问题
-          # 我们把输出路径指向上一级的 Libbox.xcframework
-          go run ./cmd/gen_framework --platform ios
+          # 2. 补齐依赖，这是解决 "no Go package" 的核心
+          go mod download
           
-          # 3. 移动产物到 Xcode 预期的位置
-          # 脚本默认生成在当前目录下的 sing-box.xcframework 或类似名字
-          mv *.xcframework ../Libbox.xcframework
+          # 3. 手动绑定输出。注意：-o 路径必须指向 ../Libbox.xcframework
+          # 目标包路径为 github.com/SagerNet/sing-box/lib/mobile
+          gomobile bind -v \
+            -target ios \
+            -iosversion 15.0 \
+            -o ../Libbox.xcframework \
+            ./lib/mobile
           
           cd ..
+          # 验证 Libbox 是否生成成功
           ls -d Libbox.xcframework
 
       - name: Xcode Build (No Sign)
         run: |
-          PROJ=$(find . -name "*.xcodeproj" -maxdepth 1 | head -n 1)
-          
-          xcodebuild -project "$PROJ" \
+          # 强制解析依赖并进行归档
+          # SFI 是 iOS 项目的默认 Scheme
+          xcodebuild -project sing-box.xcodeproj \
                      -scheme SFI \
                      -configuration Release \
                      -archivePath build/sing-box.xcarchive \
@@ -64,12 +73,22 @@ jobs:
       - name: Package Unsigned IPA
         run: |
           mkdir -p Payload
+          # 在归档中搜索生成的 .app 文件夹
           APP_PATH=$(find build/sing-box.xcarchive/Products/Applications -name "*.app" -maxdepth 1 | head -n 1)
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: .app file not found! Current build structure:"
+            ls -R build
+            exit 1
+          fi
+          
+          echo "Packaging $APP_PATH..."
           cp -r "$APP_PATH" Payload/
           zip -r sing-box-unsigned.ipa Payload
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sing-box-v1.13.11-unsigned
+          name: sing-box-v1.11.3-unsigned
           path: sing-box-unsigned.ipa
+          retention-days: 3
