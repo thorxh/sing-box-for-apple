@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (Final Step)
+name: Build Unsigned IPA (Final Strike)
 
 on:
   workflow_dispatch:
@@ -25,65 +25,71 @@ jobs:
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
           $(go env GOPATH)/bin/gomobile init
 
-      - name: Build Libbox Framework (Proven Method)
+      - name: Build Libbox Framework (Proven)
         run: |
           git clone --branch v1.13.11 https://github.com/SagerNet/sing-box.git core
           cd core
-          # 沿用刚才验证成功的参数
           export GO_TAGS="with_quic with_dhcp with_wireguard with_shadowsocks with_utls with_clash_api with_gvisor badlinkname ios"
           export GO_LDFLAGS="-checklinkname=0 -s -w"
           export GO111MODULE=on
+          # 编译产物
           gomobile bind -target ios -iosversion 15.0 -tags "$GO_TAGS" -ldflags "$GO_LDFLAGS" -o ../Libbox.xcframework ./experimental/libbox
           cd ..
           
-          # 【核心修正】物理部署：将框架放入项目各层级搜索目录，防止 Swift 导入失败
+          # 【Vim 级精准注入】
+          # 1. 放在根目录
           mkdir -p Frameworks
           cp -r Libbox.xcframework Frameworks/
+          # 2. 放在 Library 目录下（日志显示这里报错最严重）
           mkdir -p Library/Frameworks
           cp -r Libbox.xcframework Library/Frameworks/
-          echo "Libbox deployed to ./Frameworks and ./Library/Frameworks"
+          # 3. 放在顶层供所有项目搜索
+          cp -r Libbox.xcframework ./
+          
+          echo "Libbox structure synchronization complete."
 
-      - name: Xcode Build (Skip All Signing)
+      - name: Xcode Build (Super Force)
         run: |
           PROJ="sing-box.xcodeproj"
           SCHEME="SFI"
           
-          # 1. 预解析依赖
+          # 强制解析依赖
           xcodebuild -resolvePackageDependencies -project "$PROJ" -scheme "$SCHEME"
 
-          # 2. 强制构建产物
-          # 使用 build 动作避开 archive 极其严格的 AppGroup 签名校验
+          # 使用最高的忽略签名等级，并手动指定 Framework 搜索路径
+          # 我们把当前所有可能的路径都喂给编译器
           xcodebuild build -project "$PROJ" \
                      -scheme "$SCHEME" \
                      -configuration Release \
                      -sdk iphoneos \
                      -derivedDataPath build_output \
-                     FRAMEWORK_SEARCH_PATHS="$(pwd)/Frameworks $(pwd)/Library/Frameworks" \
+                     FRAMEWORK_SEARCH_PATHS="$(pwd) $(pwd)/Frameworks $(pwd)/Library/Frameworks" \
                      CODE_SIGNING_ALLOWED=NO \
                      CODE_SIGNING_REQUIRED=NO \
                      CODE_SIGN_IDENTITY="" \
                      PROVISIONING_PROFILE="" \
                      AD_HOC_CODE_SIGNING_ALLOWED=YES \
-                     COMPILER_INDEX_STORE_ENABLE=NO
+                     COMPILER_INDEX_STORE_ENABLE=NO \
+                     ONLY_ACTIVE_ARCH=NO \
+                     GENERATE_INFOPLIST_FILE=YES
 
       - name: Package Unsigned IPA
         run: |
           echo "Locating SFI.app..."
-          # 从生成的 DerivedData 中精准抓取 .app
+          # 深度搜索 Release-iphoneos 目录下的 .app
           APP_PATH=$(find build_output -name "SFI.app" -type d | grep "Release-iphoneos" | head -n 1)
           
           if [ -z "$APP_PATH" ]; then
-            echo "Searching for any .app as fallback..."
             APP_PATH=$(find build_output -name "*.app" -type d | grep "Release-iphoneos" | head -n 1)
           fi
 
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: .app file not found."
-            find build_output -name "*.app"
+            echo "ERROR: .app not found. Final debug list:"
+            find build_output -name "*.app" || echo "No .app files in build_output"
             exit 1
           fi
           
-          echo "Success! Found app at: $APP_PATH"
+          echo "Found app: $APP_PATH"
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
           zip -r sing-box-unsigned.ipa Payload
