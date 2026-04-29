@@ -1,4 +1,4 @@
-name: Build Unsigned IPA for New SagerNet
+name: Build Unsigned IPA (New Version)
 
 on:
   workflow_dispatch:
@@ -19,21 +19,35 @@ jobs:
           go-version: '1.22'
           cache: true
 
-      - name: Install gomobile
+      - name: Install Dependencies
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
           gomobile init
 
-      - name: Build Frameworks via Makefile
+      - name: Read Makefile and Build
         run: |
-          # 既然根目录有 Makefile，我们直接调用它
-          # 针对新版，通常是这个命令来生成 Apple 各平台的库
-          make xcframework
+          echo "--- Makefile Targets ---"
+          grep -E '^[a-zA-Z0-9_-]+:' Makefile || true
+          
+          # 根据常见目标名进行尝试
+          if grep -q "ios:" Makefile; then
+            make ios
+          elif grep -q "apple:" Makefile; then
+            make apple
+          elif grep -q "libs:" Makefile; then
+            make libs
+          elif [ -f "SFI/Makefile" ]; then
+            cd SFI && make
+          else
+            # 最后的兜底：如果 Makefile 没写清楚，直接运行 Go 脚本（如果它还在的话）
+            find . -name "gen_framework" -exec go run {} --platform ios \; || echo "No gen_framework found"
+          fi
 
       - name: Xcode Build (No Sign)
         run: |
-          # 新版工程文件名改成了 sing-box.xcodeproj
-          xcodebuild -project sing-box.xcodeproj \
+          # 寻找项目文件并构建
+          PROJ=$(find . -name "*.xcodeproj" -maxdepth 1 | head -n 1)
+          xcodebuild -project "$PROJ" \
                      -scheme SFI \
                      -configuration Release \
                      -archivePath build/sing-box.xcarchive \
@@ -47,8 +61,9 @@ jobs:
       - name: Package Unsigned IPA
         run: |
           mkdir -p Payload
-          # 查找生成的 .app (SFI 代表 Sing-box For iOS)
-          find build/sing-box.xcarchive/Products/Applications -name "*.app" -exec cp -r {} Payload/ \;
+          # 寻找生成的 .app 并打包
+          APP_PATH=$(find build/sing-box.xcarchive/Products/Applications -name "*.app" | head -n 1)
+          cp -r "$APP_PATH" Payload/
           zip -r sing-box-unsigned.ipa Payload
 
       - name: Upload Artifact
