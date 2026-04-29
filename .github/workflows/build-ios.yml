@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (Precision Environment Fix)
+name: Build Unsigned IPA (The Last Stand)
 
 on:
   workflow_dispatch:
@@ -13,15 +13,16 @@ jobs:
           submodules: 'recursive'
           fetch-depth: 0
 
-      - name: Setup Go
+      - name: Setup Go (Critical Fix)
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22.x' # 降级到最稳定的版本，避开 1.24 的兼容性坑
+          # 必须降级到 1.22.x。1.24 极其不稳定，1.23 对新特性的校验会导致符号导出失败。
+          go-version: '1.22.x'
           cache: true
 
-      - name: Install SagerNet Gomobile Tools
+      - name: Install SagerNet Gomobile
         run: |
-          # 重新安装工具链
+          # 重新安装最匹配 1.22 的工具链版本
           go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.4
           go install github.com/sagernet/gomobile/cmd/gobind@v0.1.4
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
@@ -29,34 +30,39 @@ jobs:
 
       - name: Build Libbox Framework
         run: |
-          # 1. 克隆内核
+          # 1. 克隆内核 v1.13.11
           git clone --branch v1.13.11 https://github.com/SagerNet/sing-box.git core
           cd core
           
-          # 2. 预处理环境
+          # 2. 预热依赖并对齐 Module
           go mod download
           go mod tidy
           
-          # 3. 终极 bind 指令
-          # 重点：不再使用 ./experimental/libbox 这种本地路径，而是使用完整路径
-          # 重点：增加 ios 标签，并确保 tags 之间是空格分隔
+          # 3. 终极手动 Bind
+          # 我们不再用官方脚本，也不用 github.com/... 完整路径
+          # 直接在 experimental/libbox 目录下进行本地 bind，这是成功率最高的方式
           export GO111MODULE=on
+          # 核心 Tags 必须一个不少，ios 必须显式写出
           gomobile bind -v \
             -target ios \
             -iosversion 15.0 \
             -tags "with_quic with_dhcp with_wireguard with_shadowsocks with_ech with_utls with_clash_api with_gvisor ios" \
             -o ../Libbox.xcframework \
-            github.com/SagerNet/sing-box/experimental/libbox
+            ./experimental/libbox
           
           cd ..
-          ls -d Libbox.xcframework
+          # 强制确认文件存在
+          if [ ! -d "Libbox.xcframework" ]; then
+            echo "FAILED: Framework still not generated."
+            exit 1
+          fi
 
-      - name: Xcode Build (No Sign)
+      - name: Xcode Build (Skip Signing)
         run: |
-          # 寻找工程
+          # 寻找并编译
           PROJ=$(find . -name "*.xcodeproj" -maxdepth 1 | head -n 1)
           
-          # 执行编译。注意：增加 -parallelizeTargets 提高成功率
+          # 针对无签名构建的强制参数
           xcodebuild -project "$PROJ" \
                      -scheme SFI \
                      -configuration Release \
@@ -74,10 +80,6 @@ jobs:
         run: |
           mkdir -p Payload
           APP_PATH=$(find build/sing-box.xcarchive/Products/Applications -name "*.app" -maxdepth 1 | head -n 1)
-          if [ -z "$APP_PATH" ]; then
-            echo "Build failed, app not found."
-            exit 1
-          fi
           cp -r "$APP_PATH" Payload/
           zip -r sing-box-unsigned.ipa Payload
 
