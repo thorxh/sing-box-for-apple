@@ -1,4 +1,4 @@
-name: Build Unsigned IPA (Structure Optimized)
+name: Build Unsigned IPA (Official Build Logic)
 
 on:
   workflow_dispatch:
@@ -16,12 +16,11 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.23' # 建议保持在 1.23
           cache: true
 
       - name: Install SagerNet Gomobile
         run: |
-          # 必须使用 SagerNet 的 fork 版本
           go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.4
           go install github.com/sagernet/gomobile/cmd/gobind@v0.1.4
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
@@ -29,38 +28,38 @@ jobs:
 
       - name: Build Libbox Framework
         run: |
-          # 1. 克隆内核到 core 目录
+          # 1. 克隆内核 v1.13.11
           git clone --branch v1.13.11 https://github.com/SagerNet/sing-box.git core
+          cd core
           
-          # 2. 检查壳项目根目录的 Makefile 目标
-          # 尝试使用壳项目原生的构建指令，这会自动处理 experimental/libbox 入口
-          if grep -q "lib_ios" Makefile; then
-            echo "Using Makefile to build..."
-            # 这里的 GOPATH 设置是为了让 Makefile 里的 gomobile 命令能被找到
-            make lib_ios
-          else
-            echo "Makefile target not found, falling back to manual bind..."
+          # 2. 补齐依赖
+          go mod download
+          
+          # 3. 核心修正：使用官方内部构建工具
+          # 这个工具位于 cmd/internal/build_libbox，它会自动处理 experimental/libbox 的导出
+          # 我们直接调用它的入口函数（通常内核根目录有对应的驱动脚本或通过 go run 触发）
+          # 根据 v1.13.11 结构，执行以下命令：
+          export GO111MODULE=on
+          go run ./cmd/internal/build_libbox -target ios -o ../Libbox.xcframework
+          
+          cd ..
+          
+          # 4. 兼容性检查：如果上面的命令没生成，则执行最后的强力 bind
+          if [ ! -d "Libbox.xcframework" ]; then
             cd core
-            go mod download
-            # 手动指向 experimental/libbox，这是 v1.13.11 的正确入口
-            gomobile bind -v \
-              -target ios \
-              -iosversion 15.0 \
-              -tags "with_quic with_dhcp with_wireguard with_shadowsocks with_ech with_utls with_clash_api" \
+            gomobile bind -v -target ios -iosversion 15.0 \
+              -tags "with_quic with_dhcp with_wireguard with_shadowsocks with_ech with_utls with_clash_api with_gvisor" \
               -o ../Libbox.xcframework \
-              github.com/SagerNet/sing-box/experimental/libbox
+              ./experimental/libbox
             cd ..
           fi
           
-          # 3. 验证产物（Xcode 项目配置要求必须是大写的 Libbox.xcframework）
           ls -d Libbox.xcframework
 
       - name: Xcode Build (No Sign)
         run: |
-          # 自动识别 .xcodeproj 文件
-          PROJ=$(find . -name "*.xcodeproj" -maxdepth 1 | head -n 1)
-          
-          xcodebuild -project "$PROJ" \
+          # 确保环境变量绕过签名
+          xcodebuild -project sing-box.xcodeproj \
                      -scheme SFI \
                      -configuration Release \
                      -archivePath build/sing-box.xcarchive \
@@ -76,15 +75,7 @@ jobs:
       - name: Package Unsigned IPA
         run: |
           mkdir -p Payload
-          # 动态定位生成的 .app
           APP_PATH=$(find build/sing-box.xcarchive/Products/Applications -name "*.app" -maxdepth 1 | head -n 1)
-          
-          if [ -z "$APP_PATH" ]; then
-            echo "Error: .app file not found!"
-            ls -R build
-            exit 1
-          fi
-          
           cp -r "$APP_PATH" Payload/
           zip -r sing-box-unsigned.ipa Payload
 
@@ -93,4 +84,3 @@ jobs:
         with:
           name: sing-box-v1.13.11-unsigned
           path: sing-box-unsigned.ipa
-          retention-days: 3
